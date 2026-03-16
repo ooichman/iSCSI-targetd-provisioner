@@ -184,8 +184,13 @@ targetcli /iscsi/iqn.2026-03.com.example:target01/tpg1/acls/iqn.2026-03.com.exam
    set auth userid=admin password=ciao
 ```
 
+Now we will save everything and make sure the configuration are premanent
 
+```bash
+targetcli saveconfig
+```
 
+#### (Optional) Firewalld configuration
 If using `firewalld`, 
 
 ```
@@ -196,18 +201,6 @@ firewall-cmd --reload
 
 ### Configure the nodes (iscsi clients)
 
-#### Install the iscsi-initiator-utils package
-
-The `iscsiadm` command is required for all clients.  This is provided
-by the `iscsi-initiator-utils` package and should be part of the
-standard RHEL, CentOS or Fedora installation.
-
-```
-sudo yum install -y iscsi-initiator-utils
-```
-
-#### Configure the Initiator Name
-
 Each node requires a unique initiator name.  USE OF DUPLICATE NAMES
 MAY CAUSE PERFORMANCE ISSUES AND DATA LOSS.
 
@@ -215,25 +208,90 @@ By default, a random initiator name is generated when the
 `iscsi-initiator-utils` package is installed.  This usually unique
 enough, but is not guaranteed.  It's also not very descriptive.
 
-To set a custom initiator name, edit the file `/etc/iscsi/initiatorname.iscsi`:
+#### Configure the OpenShift Node
 
+To set a custom initiator name, we will create a Machine Config 
+Resource definition that will create the file `/etc/iscsi/initiatorname.iscsi`
+and will make sure the following content is within the file :
+`InitiatorName=iqn.2017-04.com.example:node1`
+
+##### (Optional) Configure MCP 
+
+In OpenShift to setup node specific configuration we will need to create
+a custom machine config pool (mcp) to mache the node we want to apply the configuration.  
+A custom configuration can only be applied to a worker node and we need to make sure  
+all the generic worker configuration are still being applied. For that we will create  
+a Machine Config Pool to catch both custom and generic label match :
+
+```bash
+cat << EOF | oc apply -f -
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+    name: master01
+spec:
+  machineConfigSelector:
+    matchExpressions:
+      - {key: machineconfiguration.openshift.io/role, operator: In, values: [worker,worker01]}
+  maxUnavailable: null
+  nodeSelector:
+    matchLabels:
+      kubernetes.io/hostname: worker01.example.com
+EOF
 ```
-InitiatorName=iqn.2017-04.com.example:node1
+In order to make sure the Node as the necessary role to match the machine config pool we  
+will label the node with the role we want (in our example it's worker01)
+
+```bash
+oc label node worker01.example.com node-role.kubernetes.io/worker01=
 ```
 
-In the above example, the initiator name is set to
-`iqn.2017-04.com.example:node1`.
+##### Configure the Machine Config (mc)
 
-After changing the initiator name, restart `iscsid.service`.
+Once the MCP is configured we  will generate a base64 string from the file content :
 
+```bash
+export CONTENT_BASE64=$(echo 'InitiatorName=iqn.2017-04.com.example:node1' | base64 -w0)
 ```
-sudo systemctl restart iscsid
+
+The Following mc will create the file we described in the beginning of the scrion  
+and we will make sure iscsid is running using the systemd configuration part :
+
+```bash
+cat << EOF | oc apply -f -
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker01
+  name: 55-master-iscsi-initiator-worker01
+spec:
+  config:
+    ignition:
+      version: 3.4.0
+    storage:
+      files:
+      - contents:
+          source: data:text/plain;charset=utf-8;base64,${CONTENT_BASE64}
+        mode: 420
+        overwrite: true
+        path: /etc/iscsi/initiatorname.iscsi
+    systemd:
+      units:
+        - enabled: true
+          name: iscsid.service
+EOF
 ```
+
+
+#### Configure Kubernetes Node 
+(In regards to Kubernetes It's the same for configuring a normal Node)
 
 ### Install the iscsi provisioner pod in Kubernetes
 
 Run the following commands. The secret correspond to username and password you have chosen for targetd (admin is the default for the username).
 This set of command will install iSCSI-targetd provisioner in the `default` namespace.
+
 ```
 export NS=default
 kubectl create secret generic targetd-account --from-literal=username=admin --from-literal=password=ciao -n $NS
@@ -244,134 +302,87 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes-incubator/external
 ### Install the iscsi provisioner pod in Openshift
 
 Run the following commands. The secret correspond to username and password you have chosen for targetd (admin is the default for the username)
+
 ```
-oc new-project iscsi-provisioner
+oc adm new-project openshift-iscsi-provisioner
+oc project openshift-iscsi-provisioner
 oc create sa iscsi-provisioner
-oc adm policy add-cluster-role-to-user cluster-reader system:serviceaccount:iscsi-provisioner:iscsi-provisioner
-# if Openshift is version < 3.6 add the iscsi-provisioner-runner role
-oc create -f https://raw.githubusercontent.com/kubernetes-incubator/external-storage/master/iscsi/targetd/openshift/iscsi-auth.yaml
-# else if Openshift is version >= 3.6 add the system:persistent-volume-provisioner role
-oc adm policy add-cluster-role-to-user system:persistent-volume-provisioner system:serviceaccount:iscsi-provisioner:iscsi-provisioner
+oc adm policy add-cluster-role-to-user cluster-reader system:serviceaccount:openshift-iscsi-provisioner:iscsi-provisioner
+oc adm policy add-cluster-role-to-user system:persistent-volume-provisioner system:serviceaccount:openshift-iscsi-provisioner:iscsi-provisioner
 #
-oc secret new-basicauth targetd-account --username=admin --password=ciao
+oc create secret generic targetd-account --from-literal=username=admin --from-literal=password=ciao -n openshift-iscsi-provisioner
 oc create -f https://raw.githubusercontent.com/kubernetes-incubator/external-storage/master/iscsi/targetd/openshift/iscsi-provisioner-dc.yaml
 ```
 
-### Start iscsi provisioner as docker container.
+
+
+### Start iscsi provisioner as A container.
 
 Alternatively, you can start a provisioner as a container locally.
 
 ```bash
-docker run -ti -v /root/.kube:/kube -v /var/run/kubernetes:/var/run/kubernetes --privileged --net=host quay.io/external_storage/iscsi-controller:latest start --kubeconfig=/kube/config --master=http://127.0.0.1:8080 --log-level=debug --targetd-address=192.168.99.100 --targetd-password=ciao --targetd-username=admin
+podman run -ti -v /root/.kube:/kube -v /var/run/kubernetes:/var/run/kubernetes --privileged --net=host quay.io/external_storage/iscsi-controller:latest start --kubeconfig=/kube/config --master=http://127.0.0.1:8080 --log-level=debug --targetd-address=192.168.99.100 --targetd-password=ciao --targetd-username=admin
 ```
 
 ### Create a storage class
 
 storage classes should look like the following
+
 ```
-kind: StorageClass
 apiVersion: storage.k8s.io/v1
+kind: StorageClass
 metadata:
-  name: iscsi-targetd-vg-targetd
-provisioner: iscsi-targetd
+  name: targetd-provisioner
+  resourceVersion: "3132739"
 parameters:
-# this id where the iscsi server is running
-  targetPortal: 192.168.99.100:3260
-  
-# this is the iscsi server iqn  
-  iqn: iqn.2003-01.org.linux-iscsi.minishift:targetd
-  
-# this is the iscsi interface to be used, the default is default
-# iscsiInterface: default
-
-# this must be on eof the volume groups condifgured in targed.yaml, the default is vg-targetd
-# volumeGroup: vg-targetd
-
-# this is a comma separated list of initiators that will be give access to the created volumes, they must correspond to what you have configured in your nodes.
-  initiators: iqn.2017-04.com.example:node1 
-  
-# whether or not to use chap authentication for discovery operations  
   chapAuthDiscovery: "true"
- 
-# whether or not to use chap authentication for session operations  
-  chapAuthSession: "true" 
-  
-```
-you can create one with the following command in kubernetes
-
-```
-kubectl create -f https://raw.githubusercontent.com/kubernetes-incubator/external-storage/master/iscsi/targetd/kubernetes/iscsi-provisioner-class.yaml
-```
-or this command in openshift
-```
-oc create -f https://raw.githubusercontent.com/kubernetes-incubator/external-storage/master/iscsi/targetd/openshift/iscsi-provisioner-class.yaml
+  chapAuthSession: "true"
+  fsType: xfs
+  initiators: iqn.2026-03.com.example:client1
+  iqn: iqn.2026-03.com.example:target01
+  iscsiInterface: default
+  targetPortal: 10.100.0.1:3260
+  volumeGroup: vg-targetd
+provisioner: iscsi-targetd
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
 ```
 
 ### Test iscsi provisioner
 
-Create a pvc
+#### Create a pvc
+
 ```
-oc create -f https://raw.githubusercontent.com/kubernetes-incubator/external-storage/master/iscsi/targetd/openshift/iscsi-provisioner-pvc.yaml
+cat << EOF | oc apply -f -
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: test-claim
+spec:
+  storageClassName: targetd-provisioner
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Mi
+EOF
 ```
 verify that the pv has been created
+
 ```
-oc get pv
+oc get pvc
+NAME         STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS          VOLUMEATTRIBUTESCLASS   AGE
+test-claim   Bound    pvc-08822372-8925-4662-a67f-f7056adc5b33   100Mi      RWX            targetd-provisioner   <unset>                 6h10m
 ```
+
 you may also want to verify that the volume has been created in you volume group
+
 ```
 targetcli ls
 ```
+
 deploy a pod that uses the pvc
+
 ```
 oc create -f https://raw.githubusercontent.com/kubernetes-incubator/external-storage/master/iscsi/targetd/openshift/iscsi-test-pod.yaml
 ```
-
-## Installing iSCSI provisioner using ansible
-
-If you have installed OpenShift using the ansible installer you can use a set of playbook to automate the above instructions.
-You can find more documentation on these playbooks [here](./ansible/README.md)
-before running the playbooks you need to annotate the inventory file with some additional variables and the nodes with the iscsi inititator name that you want to be created. Here is a summary of the variables:
-
-| Variable Name  | Description  |
-|---|---|
-| targetd_lvm_volume_group |  the volume group to be created |
-| targetd_lvm_physical_volumes | comma separated list of devices to add to the volume group  |
-| targetd_password  | the password used to authenticate the connection to targetd, you may want to not store this on your inventory file, you can pass this as `{{ lookup('env','TARGETD_PASSWORD') }}`  |
-| targetd_user |  the username used to authenticate the connection to targetd, you may want to not store this on your inventory file, you can pass this as `{{ lookup('env','TARGETD_USERNAME') }}` |
-| targetd_iscsi_target | the name of the target to be created in the target server  |
-| iscsi_provisioner_pullspec |  the location of the iSCSI-targetd provisioner image |
-| iscsi_provisioner_default_storage_class | whether the created storage class should be the default class  |
-| iscsi_provisioner_portals | optional, comma separated list of alternative IP:port where the iscsi server can be found, specifying this parameters trigger the usage of multipath |
-| chap_auth_discovery | true/false  whether to use chap authentication for discovery operations |
-| discovery_sendtargets_auth_username | initiator username |
-| discovery_sendtargets_auth_password | initiator password, you can pass this as `{{ lookup('env','SENDTARGET_PASSWORD') }}` |
-| discovery_sendtargets_auth_username_in | target username |
-| discovery_sendtargets_auth_password_in | target password, you can pass this as `{{ lookup('env','SENDTARGET_PASSWORD_IN') }}` |
-| chap_auth_session | true/false  whether to use chap authentication for session operations |
-| session_auth_username | initiator username |
-| session_auth_password | initiator password, you can pass this as `{{ lookup('env','SESSION_PASSWORD') }}` |
-| session_auth_username_in | target username |
-| session_auth_password_in | target password, you can pass this as `{{ lookup('env','SESSION_PASSWORD_IN') }}` |
-
-All the nodes should have a label with their defining the initiator name for that node, here is an example:
-
-```
-ose-node1.cscc openshift_node_labels="{'region': 'primary', 'zone': 'default'}" iscsi_initiator_name=iqn.2003-03.net.deadvax:ose-node1
-ose-node2.cscc openshift_node_labels="{'region': 'primary', 'zone': 'default'}" iscsi_initiator_name=iqn.2003-03.net.deadvax:ose-node2
-```
-see also the individual [roles documentation](./ansible)
-
-To install iSCSI provisioner using ansible, run the following
-```
-ansible-playbook -i <your inventory file> ansible/playbook/all.yaml
-```
-
-
-## on iSCSI authentication
-
-If you enable iSCSI CHAP-based authentication, the ansible installer will set the target configuration consinstently and also configure the storage class.
-However at provisioning time the provisioner will not setup the chap secret. Having the permissions to setup a secret in any namespace would make the provisioner too powerful and insecure.
-So, it is up to the project administrator to setup the secret.
-The name of the expected secret name will be `<provisioner-name>-chap-secret` 
-An example of the secret format can be found [here](./openshift/iscsi-chap-secret.yaml)
-
