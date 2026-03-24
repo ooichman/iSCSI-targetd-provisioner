@@ -1,0 +1,33 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: targetd-provisioner
+provisioner: iscsi-targetd  # Must match the name in your Controller binary
+parameters:
+  # Connection Details
+  targetPortal: "10.100.0.1:3260"
+  iqn: "iqn.2026-03.com.example:target01"
+  iscsiInterface: "default"
+  
+  # LVM Configuration (Passed to Python API)
+  volumeGroup: "vg-targetd"
+  thinPool: "pool" 
+  
+  # Node/Initiator Config
+  initiators: "iqn.2026-03.com.example:client1"
+  
+  # Authentication (Stored in K8s Secrets)
+  chapAuthDiscovery: "false"
+  chapAuthSession: "false"
+  secretName: "targetd-account"
+  secretNamespace: "openshift-iscsi-provisioner"
+  
+  # Filesystem
+  fsType: "xfs" 
+
+reclaimPolicy: Delete
+# Changed to Immediate or WaitForFirstConsumer based on your preference.
+# WaitForFirstConsumer is better for multi-node clusters to ensure 
+# the volume is provisioned where the pod actually lands.
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true

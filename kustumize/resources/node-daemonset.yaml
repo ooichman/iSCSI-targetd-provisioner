@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: iscsi-node
+spec:
+  selector:
+    matchLabels:
+      app: iscsi-node
+  template:
+    metadata:
+      labels:
+        app: iscsi-node
+    spec:
+      hostNetwork: true
+      containers:
+        - name: node-plugin
+          image: quay.io/ooichman/iscsi-node:latest
+          securityContext:
+            privileged: true
+          envFrom:
+            - configMapRef:
+                name: iscsi-config
+          env:
+            - name: PVC_NAME
+              value: "demo-pvc" # Logic to be dynamic later
+          volumeMounts:
+            - name: host-bin
+              mountPath: /usr/sbin
+              readOnly: true
+            - name: host-lib
+              mountPath: /usr/lib64
+              readOnly: true
+            - name: host-dev
+              mountPath: /dev
+            - name: host-iscsi
+              mountPath: /etc/iscsi
+            - name: host-run
+              mountPath: /run
+      volumes:
+        - name: host-bin
+          hostPath:
+            path: /usr/sbin
+        - name: host-lib
+          hostPath:
+            path: /usr/lib64
+        - name: host-dev
+          hostPath:
+            path: /dev
+        - name: host-iscsi
+          hostPath:
+            path: /etc/iscsi
+        - name: host-run
+          hostPath:
+            path: /run

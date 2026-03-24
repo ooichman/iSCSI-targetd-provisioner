@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iscsi-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iscsi-controller
+  template:
+    metadata:
+      labels:
+        app: iscsi-controller
+    spec:
+      containers:
+        - name: controller
+          image: quay.io/ooichman/iscsi-controller:latest
+          envFrom:
+            - configMapRef:
+                name: iscsi-config

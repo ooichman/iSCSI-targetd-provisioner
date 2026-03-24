@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: openshift-iscsi-provisioner
+
+resources:
+  - resources/sa.yaml
+  - resources/rbac.yaml
+  - resources/storageclass.yaml
+  - resources/controller-service.yaml
+  - resources/controller-deployment.yaml
+  - resources/node-daemonset.yaml
+
+configMapGenerator:
+  - name: iscsi-config
+    literals:
+      - ISCSI_API_ENDPOINT="http://10.100.0.1:18700/targetd/rpc"
+      - ISCSI_TARGET_IQN="iqn.2026-03.com.example:target01"
+      - ISCSI_PORTALS="10.100.0.1:3260,10.101.0.1:3260"
+      - ISCSI_MULTIPATH_ENABLED="true"
+      - CONTROLLER_SERVICE_URL="http://iscsi-controller.openshift-iscsi-provisioner.svc:8080"
+
+# Note: Remember to run 'oc adm policy add-scc-to-user privileged -z iscsi-provisioner'

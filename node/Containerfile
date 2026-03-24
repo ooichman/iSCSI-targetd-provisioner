@@ -1,0 +1,19 @@
+# Stage 1: Build static binary
+FROM golang:1.25-alpine AS builder
+WORKDIR /app
+COPY go.mod ./
+# If you have a go.sum, uncomment next line
+# COPY go.sum ./ 
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags "-s -w -extldflags '-static'" \
+    -o iscsi-node ./main.go
+
+# Stage 2: Final Runtime (Ultra-minimal)
+FROM scratch
+# Copy the binary
+COPY --from=builder /app/iscsi-node /iscsi-node
+# Node plugin must run as root to manage host sessions
+USER 0
+ENTRYPOINT ["/iscsi-node"]

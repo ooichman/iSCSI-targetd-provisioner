@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: iscsi-test-pvc
+spec:
+  storageClassName: targetd-provisioner
+  accessModes: [ "ReadWriteOnce" ]
+  resources:
+    requests:
+      storage: 333Mi
