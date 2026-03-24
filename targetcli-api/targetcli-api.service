@@ -1,0 +1,12 @@
+[Unit]
+Description=TargetCLI JSON-RPC API
+After=network.target target.service
+
+[Service]
+# Using the new -f flag explicitly
+ExecStart=/usr/bin/python3 /usr/sbin/targetcli-api.py -f /etc/targetcli-api.conf
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
